@@ -1,0 +1,402 @@
+---
+title: "Tyding Traffic Volume NYC"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+Let's start by importing the data from the site
+
+```{r}
+if(!file.exists("./data/"))
+  dir.create("./data/")
+download.file("https://data.cityofnewyork.us/api/views/ertz-hr4r/rows.csv?accessType=DOWNLOAD",destfile = "./data/TrafficVolume/nycTrafficVolume2014-2019.csv",mode = "wb")
+list.files("./data/TrafficVolume/")
+dataCreated <- date()
+```
+ We need to import some essential packages like tidyverse,lubridate and foreign. Not only that but we will try to make the dataset more tidy.
+```{r}
+#install.packages("tidyverse")
+#install.packages("lubridate")
+#install.packages("foreign")
+#install.packages("compareDF")
+#install.packages("partitions")
+library(tidyverse)
+library(lubridate)
+library(foreign)
+library(compareDF)
+library(partitions)
+
+volumeData <- read_csv("./data/TrafficVolume/nycTrafficVolume2014-2019.csv",col_types = cols(  Date = col_date(format="%m/%d/%Y")))
+volumeData <- volumeData
+#%>%             pivot_longer(cols=-(1:7),names_to = "timeInterval",values_to = "count")
+
+
+```
+
+Vamos filtrar as estações que só são apuradas em 2019
+```{r}
+observations2019<- volumeData %>% filter(year(Date)>=2019)
+remove(volumeData)
+
+```
+Precisamos encontrar os Municipios! Para tanto vamos usar os dados do LION dataset por SegmentID(lembrando que podemos ter um mesmo segmento em diferentes municípios). Veja que como temos duplicatas vamos tentar somente pegar os dados do LBoro(municipio a esquerda) e RBoro(Municipio a direita).
+```{r}
+#used to import dataset from arcgis
+lion2021 <- as_tibble(read.dbf("./data/ReferenceRoads/lion2021B.dbf"))
+#fixing the cols types
+lion2021$SegmentID<-as.numeric(as.character(lion2021$SegmentID))
+lion2021$Street<-as.character(lion2021$Street)
+#lets use only the distinct rows
+lion2021<-select(lion2021,c("Street","SegmentID","LBoro","RBoro"))%>%
+          distinct
+
+```
+
+Veja que tanto o dataset LION2021B como o banco de dados com as observações possuem dados que duplicados ou com pequenas alterações refentes a mesma localização. Primeiro vamos juntar as tabelas por "SegmentID" e verificar se existe algum missing value.
+
+```{r}
+left_join(observations2019,lion2021,by = c("Segment ID"="SegmentID"))%>%
+                pivot_longer(cols = (LBoro:RBoro),names_to = "Tipo",values_to = "MunicipalityCode")%>%
+                select(-(Tipo))%>%
+                distinct %>%
+                filter(is.na(MunicipalityCode))
+```
+
+Veja que alguns valores estão faltando. Logo vamos importar um banco de dados lion 2014 mais antigo e verificar se esse pode ser utilizado no lugar do mais recente
+
+```{r}
+#used to import dataset from arcgis
+lion2014 <- as_tibble(read.dbf("./data/ReferenceRoads/lion2014D.dbf"))
+#fixing the cols types
+lion2014$SegmentID<-as.numeric(as.character(lion2014$SegmentID))
+lion2014$Street<-as.character(lion2014$Street)
+#lets use only the distinct rows
+lion2014<-select(lion2014,c("Street","SegmentID","LBoro","RBoro"))%>%
+          distinct
+compare_df(select(lion2021,c("SegmentID","LBoro","RBoro")),select(lion2014,c("SegmentID","LBoro","RBoro")),"SegmentID")
+
+```
+
+Temos um total de 9 campos modificados entre um banco e o outro. Vamos tentar restingir ao ano de 2019.
+```{r}
+validSegments <- unique(observations2019$`Segment ID`)
+compare_df(select(lion2021,c("SegmentID","LBoro","RBoro"))%>%
+             filter(SegmentID %in% validSegments)
+           ,select(lion2014,c("SegmentID","LBoro","RBoro"))%>%
+             filter(SegmentID %in% validSegments)
+           ,"SegmentID")
+```
+Logo é possível usar o lion2014 nos nossos dados para gerar código de municipio.
+```{r}
+remove(lion2021)
+observations2019 <- left_join(observations2019,lion2014,by = c("Segment ID"="SegmentID"))%>%
+                pivot_longer(cols = (LBoro:RBoro),names_to = "Tipo",values_to = "Borough")%>%
+                select(-(Tipo))%>%
+                distinct
+remove(lion2014)
+```
+Vamos verificar se existe algum campo nulo.
+```{r}
+summary(observations2019)
+```
+Vamos remover observações invalida usando codigo de municipio 0.
+```{r}
+observations2019<-filter(observations2019, Borough !=0)
+```
+
+
+
+Veja que agora podemos gerar nossos banco de testes facilmente com uma função de sampling.
+```{r}
+set.seed(4)
+random_date<- sample(unique(observations2019$Date),1)
+myresult<- filter(observations2019,Date == random_date)
+
+```
+Vamos baixar os dados do Covid da cidade de Nova Iorque
+```{r}
+download.file("https://github.com/nychealth/coronavirus-data/archive/refs/heads/master.zip",destfile = "./data/covid.zip")
+lastdir<-getwd()
+setwd(paste(lastdir,"./data/",sep=''))
+unzip("./covid.zip")
+setwd(lastdir)
+remove(lastdir)
+covid_like_illness_by_boro <- read_csv("./data/coronavirus-data-master/trends/covid-like-illness-by-boro.csv",col_types = cols(Date = col_date(format="%Y-%m-%d")))
+idx<-function(value){
+   if(value == "Manhattan"){
+       1
+   }
+  else if(value == "Bronx"){
+      2
+  }
+  else if(value == "Brooklyn"){
+      3
+  }else if(value == "Queens")
+  {
+      4
+  }
+  else if(value == "Staten Island")
+  {
+      5
+  }
+  else{0}
+}
+covid_like_illness_by_boro<-covid_like_illness_by_boro %>% mutate(Borough = sapply(Borough,idx))
+remove(idx)
+```
+Creating tests
+```{r}
+covid20<-filter(covid_like_illness_by_boro, year(Date)<=2020) %>%select(c("Date","Borough","Visit_All_ages","Admit_All_ages"))
+remove(covid_like_illness_by_boro)
+#result<- %>%
+myresult<-mutate(observations2019,Date = as_date(update(Date,year=2020)))%>%
+          left_join(covid20,by=c("Date","Borough"))
+
+#gives a warning but the result is the same as using group_by before and cur_group_id in mutate without grouping
+myresult<-myresult %>% mutate(newID=group_indices(.,`Segment ID`,Direction,Borough))
+
+#big dataset
+write_csv(myresult,"./data/output_tests/my_data.gzip")
+
+
+
+#separating by dates
+
+valid_dates<- unique(myresult$Date)
+for(i in seq_along(valid_dates)){
+  print(valid_dates[i])
+  print(paste("./data/output_tests/daily/",valid_dates[i],".csv",sep=""))
+  write_csv(filter(myresult,Date == valid_dates[i])%>%arrange(newID),paste("./data/output_tests/daily/",valid_dates[i],".csv",sep=""))
+}
+```
+Criando teste multiperiodo primeiro vamos criar id's unicos para Segemnto por direção e borough. Verificar novo agrupamento
+```{r}
+library(sqldf)
+#gives a warning but the result is the same as using group_by before and cur_group_id in mutate without grouping
+myresult<-myresult %>% mutate(newID=group_indices(.,`Segment ID`,Direction,Borough))
+sqlStmt <- "select Date, count(distinct newID) from myresult group by Date"
+interval_candidates<-sqldf(sqlStmt)
+
+```
+
+Trying to find good candidates for multiperiod
+```{r}
+validationidtable<-myresult %>% select(c("Roadway Name","From","To","newID")) %>% arrange(newID) %>% distinct
+#interval from 21-09 to 27-09 total of 7 days
+interval1<-filter(myresult,month(Date)==9&(day(Date)<=27&day(Date)>=21)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+#interval from 28-09 to 29-09 total of 2 days
+interval2<-filter(myresult,month(Date)==9&(day(Date)<=29&day(Date)>=28)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+#interval from 30-09 to 04-10 total of 5 days
+interval3<-filter(myresult,(month(Date)==9&day(Date)==30)|(month(Date)==10&(day(Date)<=4&day(Date)>=1))) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval4<-filter(myresult,month(Date)==10&(day(Date)<=6&day(Date)>=5)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval5<-filter(myresult,month(Date)==10&(day(Date)<=11&day(Date)>=7)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval6<-filter(myresult,month(Date)==10&(day(Date)<=13&day(Date)>=12)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval7<-filter(myresult,month(Date)==10&(day(Date)<=18&day(Date)>=14)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval8<-filter(myresult,month(Date)==10&(day(Date)<=20&day(Date)>=19)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval9<-filter(myresult,month(Date)==10&(day(Date)<=27&day(Date)>=21)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval10<-filter(myresult,month(Date)==11&(day(Date)<=8&day(Date)>=2)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval11<-filter(myresult,month(Date)==11&(day(Date)<=10&day(Date)>=9)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval12<-filter(myresult,month(Date)==11&(day(Date)<=15&day(Date)>=11)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval13<-filter(myresult,month(Date)==11&(day(Date)<=17&day(Date)>=16)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+interval14<-filter(myresult,month(Date)==11&(day(Date)<=24&day(Date)>=18)) %>% select(Date,newID) %>% distinct %>% group_by(newID) %>% summarise(count = n()) %>% select(count) %>% distinct
+
+
+```
+Vamos gerar uma escala de trabalho dentro de 24 horas.
+```{r}
+#m will helpe me to divide my teams by groups
+m<- partitions::compositions(12, 12)
+m<-t(as.matrix(m))
+#m<-m[sample(nrow(m),size=1000,replace=FALSE),]
+
+initial <- diag(12)*12
+for(i in 1:12){
+  for(j in 1:12){
+     if(i<j){
+        base<-rep(0,12)
+        base[i] <- 6
+        base[j] <- 6
+        initial<-rbind(initial,base)
+     }
+  }
+}
+for(i in 1:12){
+  for(j in 1:12){
+    if(i<j){
+     for(k in 1:12){
+       if(j<k){
+         base<-rep(0,12)
+         base[i] <- 4
+         base[j] <- 4
+         base[k] <- 4
+         initial<-rbind(initial,base)
+       }
+     }
+    }
+  }
+}
+m<-initial
+# we need divide 12 types of schedules by the size than use function to create our team schedule
+
+# lets create a function thats take the number of teams k ,number of intervals of 24 hours n, number of locations and partition division p 
+create_instance <-function(k,n,my_instance,instance_partition,p){
+  number_of_locations<- my_instance %>% select(newID) %>% unique %>% nrow
+  tempo_total<- 24*n
+  #final output mantains the full schedule of the instance
+  mapa_viabilidade<-array(0,dim=c(k, number_of_locations,tempo_total))
+  #array with viable Borough codes
+  viable_districts<-  (my_instance %>% select(Borough) %>% unique)$Borough
+  resto <- k
+  idx_equipe_atual <- 1
+  size<- length(instance_partition)
+  for(m in 1:size){
+        if(instance_partition[m]==0) next;
+        quantidade_equipes<-floor((instance_partition[m]/size)*k)
+        if(quantidade_equipes ==0) next
+        for(curr_team in 1:quantidade_equipes){
+            #Full location schedule
+            if(m <= 4){
+                #separates in periods t of 24 hours
+                for(t in 0:(n-1)){
+                  for(j in 1:24){
+                    if(m==1){
+                       if((j>8&&j<=12)||(j>13&&j<=18)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-rep(1,number_of_locations)
+                       }
+                    }else if(m==2){
+                       if((j>6&&j<=12)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-rep(1,number_of_locations)
+                       }
+                    }else if(m==3){
+                       if((j>22&&j<=24)||(j>=1&&j<=5)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-rep(1,number_of_locations)
+                       }
+                    }else if(m==4){
+                      if(rbinom(1,1,0.5)==1)mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-rep(1,number_of_locations)
+                    }
+                   }
+                }
+                idx_equipe_atual <- idx_equipe_atual + 1
+            }else if(m<=8){#Neighboardhood limited location
+                  #lets map team to districts
+                  sorteio_location<-sample(viable_districts, size= 1,replace=TRUE)
+                  #create a array 0 or 1 based in  locations inside a Borough that was randomly draw
+                  solution<- as.numeric((my_instance %>% select(Borough,newID) %>% unique %>% arrange(newID))$Borough == sorteio_location)
+                  #View(my_instance %>% select(Borough,newID) %>% unique %>% arrange(newID))
+                  #separates in periods t of 24 hours
+                  for(t in 0:(n-1)){
+                  for(j in 1:24){
+                    if(m==5){
+                       if((j>8&&j<=12)||(j>13&&j<=18)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-solution
+                       }
+                    }else if(m==6){
+                       if((j>6&&j<=12)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-solution
+                       }
+                    }else if(m==7){
+                       if((j>22&&j<=24)||(j>=1&&j<=5)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-solution
+                       }
+                    }else if(m==8){
+                      #randomly choose its time
+                      if(rbinom(1,1,0.5)==1)mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-solution
+                    }
+                  }
+                 }
+                idx_equipe_atual <- idx_equipe_atual + 1
+            }else if(m<=12){#Random location let's limit to 50% probability by location
+                 #randomly choose locations and associate to sorteio
+                 sorteio<-rbinom(number_of_locations,1,p)
+                 #separates in periods t of 24 hours
+                 for(t in 0:(n-1)){
+                  for(j in 1:24){
+                    if(m==9){
+                       if((j>8&&j<=12)||(j>13&&j<=18)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-sorteio
+                       }
+                    }else if(m==10){
+                       if((j>6&&j<=12)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-sorteio
+                       }
+                    }else if(m==11){
+                       if((j>22&&j<=24)||(j>=1&&j<=5)){
+                           mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-sorteio
+                       }
+                    }else if(m==12){
+                      if(rbinom(1,1,0.5)==1)mapa_viabilidade[idx_equipe_atual,,(24*t)+j]<-sorteio
+                    }
+                  }
+                 }
+                idx_equipe_atual <- idx_equipe_atual + 1
+            }else{
+              print("erro tamanho particionamento equipe.")
+            }
+        }
+  }
+  #allocates remanining teams
+  while(idx_equipe_atual <= k){
+    print("resto alocado")
+    for(t in 1:tempo_total) mapa_viabilidade[idx_equipe_atual,,t]<-rbinom(number_of_locations,1,0.5)
+    idx_equipe_atual <- idx_equipe_atual + 1
+  }
+  mapa_viabilidade
+}
+
+
+```
+Vamos criar as instancias em arquivos
+```{r}
+#vamos criar as instâncias densidade fixa 30%
+meus_ks <- c(0.30) #completar depois com c(0.01,0.05,0.1,0.15,0.20,0.25)
+meus_ps <- c(0.5) # completar depois com c(0.25,0.5,0.75)
+
+#lets change so that m is smaller 
+
+my_daily_periods <- c()
+for(k in meus_ks){
+  for(p in meus_ps){
+    for(i in seq_along(valid_dates)){
+      number_of_locations<- filter(myresult,Date == valid_dates[i]) %>% select(newID) %>% unique %>% nrow
+      print(valid_dates[i])
+      #if(number_of_locations>10) next #just instances with 10 points
+      
+      if(!file.exists(paste("./data/output_tests/new_instances/",valid_dates[i],"/",sep=""))){
+             dir.create(paste("./data/output_tests/new_instances/",valid_dates[i],"/",sep=""))
+      }
+      #iterate through partitions
+      for(partition in 1:nrow(m)){
+         st<-paste("./data/output_tests/new_instances/",valid_dates[i],"/",paste(k*100,p*100,number_of_locations,paste(m[partition,],collapse = "-"),sep = "-"),".csv",sep="")
+       print(st)
+       #create instance
+       ts<-create_instance(floor(number_of_locations*k),1,filter(myresult,Date == valid_dates[i]),m[partition,],p)
+       #print(ts)
+       n3 <- dim(ts)[3]
+       #change 3d array to table with column with the times and write to gzip
+       #if number of team equals one its collapses generating a list
+       if(floor(number_of_locations*k) <= 1){
+            mp<-lapply(1:n3, function (i) ts[,,i]) %>%
+           imap_dfr(function(mtx, i) {
+           as.data.frame(t(mtx)) %>%
+           mutate(table = paste("time", i, sep = "_"))
+         
+        })
+         
+       }else{
+        mp<-lapply(1:n3, function (i) ts[,,i]) %>%
+       imap_dfr(function(mtx, i) {
+           as.data.frame(mtx) %>%
+           mutate(table = paste("time", i, sep = "_"))
+         
+        })
+       }
+       write_csv(mp,st)
+      }
+    }
+  }
+}
+
+```
+
