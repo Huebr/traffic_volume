@@ -1,7 +1,7 @@
 # TrafficVolume
 
-Link para data.rar com arquivos necessários para instalação.
+Our datasets can be found in the file data.rar these file are necessary for the notebooks.
 
 https://drive.google.com/file/d/1tPdmWaUs99W5CSdl97Pubsq8k07nCuqA/view?usp=sharing
 
-Extrair no diretorio raiz do projeto.
+just extract the in the root folder.
