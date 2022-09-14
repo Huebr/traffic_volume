@@ -11,7 +11,7 @@ The datasets are in the folder /data/outputs_tests/ separated by folder:
 The .Rmd file defines how we generated our instances just extract the in the root folder the data folder.
 
 A julia code to demonstrate how to read the data:
-
+```
   using CSV
   using Tables
   using LinearAlgebra
@@ -33,7 +33,7 @@ A julia code to demonstrate how to read the data:
       n_teams = floor(Int,size(matrix,1)/tempo_total)
       MapaViabilidade = reshape(matrix,(n_teams,n_locations,total_time))
   end
-  
+``` 
 Any problems please contact by email or here.
 
 
