@@ -31,7 +31,7 @@ A julia code to demonstrate how to read the data:
       matrix = CSV.File(s,drop=["table"]) |> Tables.matrix
       n_locations = size(matrix,2)
       n_teams = floor(Int,size(matrix,1)/tempo_total)
-      MapaViabilidade = reshape(matrix,(n_teams,n_locations,total_time))
+      M = reshape(matrix,(n_teams,n_locations,total_time))
   end
 ``` 
 Any problems please contact by email or here.
