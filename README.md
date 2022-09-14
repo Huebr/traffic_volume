@@ -30,7 +30,7 @@ A julia code to demonstrate how to read the data:
     for s in schedule_partitions
       matrix = CSV.File(s,drop=["table"]) |> Tables.matrix
       n_locations = size(matrix,2)
-      n_teams = floor(Int,size(matrix,1)/tempo_total)
+      n_teams = floor(Int,size(matrix,1)/total_time)
       M = reshape(matrix,(n_teams,n_locations,total_time))
   end
 ``` 
